@@ -24,7 +24,6 @@ class DfsuModelResult(ModelResultBase):
         item: Optional[Union[str, int]] = None,
         quantity: Optional[Quantity] = None,
     ) -> None:
-
         assert isinstance(
             data, get_args(types.UnstructuredType)
         ), "Could not construct DfsuModelResult from provided data"
@@ -117,12 +116,13 @@ class DfsuModelResult(ModelResultBase):
             da = self.data.isel(element=elemids)
             ds_model = mikeio.Dataset({da.name: da})
 
-        # TODO not sure why we rename here
+        # TODO: not sure why we rename here
+        # TODO: convert to xr.Dataset
         assert self.name is not None
         ds_model.rename({ds_model.items[0].name: self.name}, inplace=True)
 
         return PointModelResult(
-            data=ds_model,  # TODO convert to dataframe?
+            data=ds_model,
             x=ds_model.geometry.x,
             y=ds_model.geometry.y,
             name=self.name,
@@ -149,8 +149,10 @@ class DfsuModelResult(ModelResultBase):
             ds_model = self.data.extract_track(track=observation.data)
         ds_model.rename({ds_model.items[-1].name: self.name}, inplace=True)
 
+        # TODO: convert to xr.Dataset
+
         return TrackModelResult(
-            data=ds_model.dropna(),  # .to_dataframe().dropna(),
+            data=ds_model.dropna(),
             item=self.name,
             name=self.name,
             quantity=self.quantity,

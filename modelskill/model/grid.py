@@ -124,11 +124,13 @@ class GridModelResult(ModelResultBase):
         )
 
         da = self.data[self.item].interp(coords=dict(x=x, y=y), method="nearest")
-        df = da.to_dataframe().drop(columns=["x", "y"])
-        df = df.rename(columns={df.columns[-1]: self.name})
+
+        # TODO
+        # df = da.to_dataframe().drop(columns=["x", "y"])
+        # df = df.rename(columns={df.columns[-1]: self.name})
 
         return PointModelResult(
-            data=df.dropna(),
+            data=da.dropna(),
             x=da.x.item(),
             y=da.y.item(),
             item=self.name,
@@ -149,12 +151,14 @@ class GridModelResult(ModelResultBase):
         x = xr.DataArray(renamed_obs_data.x, dims="track")
         y = xr.DataArray(renamed_obs_data.y, dims="track")
         da = self.data[self.item].interp(coords=dict(time=t, x=x, y=y), method="linear")
-        df = da.to_dataframe().drop(columns=["time"])
+
+        # TODO
+        # df = da.to_dataframe().drop(columns=["time"])
         # df.index.name = "time"
-        df = df.rename(columns={df.columns[-1]: self.name})
+        # df = df.rename(columns={df.columns[-1]: self.name})
 
         return TrackModelResult(
-            data=df.dropna(),
+            data=da.dropna(),
             item=self.name,
             name=self.name,
             quantity=self.quantity,
