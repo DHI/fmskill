@@ -6,18 +6,20 @@ Examples
 --------
 >>> o1 = PointObservation("klagshamn.dfs0", item=0, x=366844, y=6154291, name="Klagshamn")
 """
+from dataclasses import dataclass
 import os
-from typing import Optional, Union
+from typing import List, Optional, Sequence, Union
 import numpy as np
 import pandas as pd
 import mikeio
 from copy import deepcopy
 
-from .utils import make_unique_index
+from .utils import make_unique_index, _get_name
 from .types import Quantity
 from .timeseries import TimeSeries
 
 
+# TODO: remove this
 def _parse_item(items, item, item_str="item"):
     if isinstance(item, int):
         item = len(items) + item if (item < 0) else item
@@ -28,6 +30,93 @@ def _parse_item(items, item, item_str="item"):
     else:
         raise TypeError(f"{item_str} must be int or string")
     return item
+
+
+@dataclass
+class ItemSelection:
+    """Utility class to keep track of value, position and auxiliary items"""
+
+    val: str
+    x: Optional[str] = None
+    y: Optional[str] = None
+    z: Optional[str] = None
+    aux: Sequence[str]
+
+    def __post_init__(self):
+        # check that val, pos and aux are unique, and that they are not overlapping
+        all_items = self.all
+        if len(all_items) != len(set(all_items)):
+            raise ValueError("Items must be unique")
+
+    @property
+    def pos(self):
+        pos = []
+        if self.x is not None:
+            pos.append(self.x)
+        if self.y is not None:
+            pos.append(self.y)
+        if self.z is not None:
+            pos.append(self.z)
+        return pos
+
+    @property
+    def all(self) -> Sequence[str]:
+        return self.pos + [self.val] + self.aux
+
+
+def _parse_items(
+    items: List[Union[str, int]],
+    val_item: Optional[Union[str, int]] = None,
+    x_item: Optional[Union[str, int]] = None,
+    y_item: Optional[Union[str, int]] = None,
+    z_item: Optional[Union[str, int]] = None,
+    aux_items: Optional[List[Union[str, int]]] = None,
+) -> ItemSelection:
+    """Parse items and return val, position and auxiliary items
+    Default behaviour:
+    - x_item is first item
+    - y_item is second item
+    - z_item is None
+    - val_item is third item (if more than 2 items)
+    - aux_items are None
+
+    Both integer and str are accepted as items. If str, it must be a key in data.
+    """
+    items = list(items)
+    min_items = 1 if x_item is None else 3
+    assert len(items) >= min_items, f"data must contain at least {min_items} item(s)"
+    if val_item is None:
+        val_item = items[0]
+    else:
+        val_item = _get_name(val_item, items)
+
+    # Check existance of items and convert to names
+    x_item = _get_name(x_item, items) if x_item is not None else None
+    y_item = _get_name(y_item, items) if y_item is not None else None
+    z_item = _get_name(z_item, items) if z_item is not None else None
+    pos_items = None
+    if x_item is not None and y_item is not None:
+        # TODO: should we allow z_item if x_item and y_item are None?
+        pos_items = [x_item, y_item]
+        if z_item is not None:
+            pos_items.append(z_item)
+
+    if aux_items is not None:
+        aux_items = [_get_name(a, items) for a in aux_items]
+
+    # Check overlap and raise errors if any
+    if pos_items is not None and val_item in pos_items:
+        raise ValueError(f"item {val_item} should not be in x, y or z")
+    if aux_items is not None and val_item in aux_items:
+        raise ValueError(f"item {val_item} should not be in aux_items")
+    if pos_items is not None and aux_items is not None:
+        overlapping_items = set(pos_items) & set(aux_items)
+        if overlapping_items:
+            raise ValueError(
+                f"x, y and z items and aux_items should not have overlapping items. Overlapping items: {overlapping_items}"
+            )
+
+    return ItemSelection(val=val_item, x=x_item, y=y_item, z=z_item, aux=aux_items)
 
 
 class Observation(TimeSeries):
@@ -54,7 +143,6 @@ class Observation(TimeSeries):
         weight: float = 1.0,
         color: str = "#d62728",
     ):
-
         if name is None:
             name = "Observation"
 
@@ -134,7 +222,6 @@ class PointObservation(Observation):
         name: str = None,
         quantity: Optional[Union[str, Quantity]] = None,
     ):
-
         self.x = x
         self.y = y
         self.z = z
@@ -230,6 +317,47 @@ class PointObservation(Observation):
         df = ds.to_dataframe()
         df.dropna(inplace=True)
         return df, itemInfo
+
+
+def _data_to_xarray(
+    data: pd.DataFrame,
+    val_item=None,
+    pos_items=None,
+    aux_items=None,
+    name=None,
+    x=None,
+    y=None,
+    z=None,
+):
+    """Convert data to internal xarray.Dataset format"""
+    if isinstance(data, pd.DataFrame):
+        cols = data.columns
+        items = _parse_items(cols, val_item, pos_items, aux_items)
+        data = data[items.all]
+        data.index.name = "time"
+        data.rename(columns={items.obs: "Observation"}, inplace=True)
+        data = data.to_xarray()
+    else:
+        raise ValueError(f"Unknown data type '{type(data)}' (pd.DataFrame)")
+
+    data.attrs["name"] = name if name is not None else items.obs
+    data["Observation"].attrs["kind"] = "observation"
+    for m in items.model:
+        data[m].attrs["kind"] = "model"
+    for a in items.aux:
+        data[a].attrs["kind"] = "auxiliary"
+
+    if x is not None:
+        data["x"] = x
+        data["x"].attrs["kind"] = "position"
+    if y is not None:
+        data["y"] = y
+        data["y"].attrs["kind"] = "position"
+    if z is not None:
+        data["z"] = z
+        data["z"].attrs["kind"] = "position"
+
+    return data
 
 
 class TrackObservation(Observation):
@@ -329,7 +457,6 @@ class TrackObservation(Observation):
         offset_duplicates: float = 0.001,
         quantity: Optional[Quantity] = None,
     ):
-
         self._filename = None
         self._item = None
 
