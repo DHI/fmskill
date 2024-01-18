@@ -126,6 +126,11 @@ def test_mm_skill_obs(cc):
     assert pytest.approx(sk2.loc["SW_2"].bias) == 0.081431053
 
 
+def test_mm_isel(cc):
+    s2 = cc.isel(observation=-1).skill()
+    assert s2.loc["SW_2"].bias == pytest.approx(0.081431053)
+
+
 def test_mm_mean_skill_obs(cc):
     df = cc.sel(model=0, observation=[0, "c2"]).mean_skill().to_dataframe()
     assert pytest.approx(df.iloc[0].si) == 0.11113215
