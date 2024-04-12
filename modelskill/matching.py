@@ -257,12 +257,13 @@ def match(
     assert isinstance(obs, Collection)
 
     if len(obs) > 1 and isinstance(mod, Collection) and len(mod) > 1:
-        if not all(isinstance(m, (DfsuModelResult, GridModelResult)) for m in mod):
+        ok_mrs = (DfsuModelResult, GridModelResult, DummyModelResult)
+        if not all(isinstance(m, ok_mrs) for m in mod):
             raise ValueError(
                 """
                 In case of multiple observations, multiple models can _only_ 
                 be matched if they are _all_ of SpatialField type, e.g. DfsuModelResult 
-                or GridModelResult. 
+                or GridModelResult (or DummyModelResult). 
                 
                 If you want match multiple point observations with multiple point model results, 
                 please match one observation at a time and then create a collection of these 
