@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from modelskill.comparison import Comparer
 from modelskill import __version__
 import modelskill as ms
+from modelskill.model.point import PointModelResult
 
 
 @pytest.fixture
@@ -951,3 +952,22 @@ def test_from_matched_non_scalar_xy_fails():
             x=df.lon,
             y=df.lat,
         )
+
+
+def test_save_load(pc, tmp_path) -> None:
+    fp = tmp_path / "test.db"
+
+    pc.save(fp)
+    pc2 = Comparer.load(fp)
+
+    assert "m1" in pc2.mod_names
+    assert "m2" in pc2.mod_names
+    assert pc2.n_points == 5
+    assert pc2.data.m1.attrs["kind"] == "model"
+    assert pc2.data.m2.attrs["kind"] == "model"
+    assert pc2.data.Observation.attrs["kind"] == "observation"
+
+    assert pc2.name == "fake point obs"
+    assert pc2.gtype == "point"
+    assert len(pc2.raw_mod_data["m1"]) == 6
+    assert isinstance(pc2.raw_mod_data["m2"], PointModelResult)

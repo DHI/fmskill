@@ -1249,21 +1249,29 @@ class Comparer(Scoreable):
         else:
             raise NotImplementedError(f"Unknown gtype: {self.gtype}")
 
-    def save(self, filename: Union[str, Path]) -> None:
-        """Save to netcdf file
+    def save(self, filename: Union[str, Path], name: Optional[str] = None) -> None:
+        """Save to duckdb file
 
         Parameters
         ----------
         filename : str or Path
             filename
         """
+        ext = Path(filename).suffix
+
+        # match ext:
+        #    case ".db":
+        if ext == ".db":
+            self._save_to_duckdb(filename, name)
+        elif ext == ".nc":
+            #    case ".nc":
+            self._save_to_netcdf(filename)
+        else:
+            #    case _:
+            raise NotImplementedError(f"Unknown extension: {ext}")
+
+    def _save_to_netcdf(self, filename) -> None:
         ds = self.data
-
-        # add self.raw_mod_data to ds with prefix 'raw_' to avoid name conflicts
-        # an alternative strategy would be to use NetCDF groups
-        # https://docs.xarray.dev/en/stable/user-guide/io.html#groups
-
-        # There is no need to save raw data for track data, since it is identical to the matched data
         if self.gtype == "point":
             ds = self.data.copy()  # copy needed to avoid modifying self.data
 
@@ -1276,9 +1284,72 @@ class Comparer(Scoreable):
 
         ds.to_netcdf(filename)
 
+    def _save_to_duckdb(
+        self,
+        filename: Union[str, Path],
+        name: Optional[str] = None,
+    ) -> None:
+        import duckdb
+
+        ds = self.data
+
+        # create a name without whitespace
+        # prefix = self.name.replace(" ", "_")
+        if name is None:
+            prefix = "s0"
+        else:
+            prefix = f"s{name}"
+
+        con = duckdb.connect(filename)
+        # TODO figure out how to save the x, y, z coordinates
+        df = (  # noqa
+            ds.to_dataframe()
+            .drop(columns=["x", "y", "z"], errors="ignore")
+            .reset_index()
+        )
+
+        duckdb.sql("CREATE SCHEMA IF NOT EXISTS " + prefix, connection=con)
+
+        duckdb.sql(
+            f"CREATE TABLE {prefix}.matched_data AS SELECT * FROM df", connection=con
+        )
+
+        attr_dict = {key: str(ds[key].attrs) for key in ds.data_vars}
+        attr_dict["global"] = str(ds.attrs)
+        attr_df = pd.DataFrame(attr_dict.items(), columns=["key", "value"])  # noqa
+        duckdb.sql(
+            f"CREATE TABLE {prefix}.attrs AS SELECT * FROM attr_df", connection=con
+        )
+
+        # time can either be an integer or a timestamp
+        # TODO make sure we have the correct type
+        if str(list(self.raw_mod_data.values())[0].data.time.dtype) == "datetime64[ns]":
+            time_type = "TIMESTAMP_NS"
+        else:
+            time_type = "BIGINT"
+
+        con.sql(
+            f"CREATE TABLE {prefix}.raw_data (time {time_type}, value DOUBLE, model TEXT)",
+        )
+        for key, value in self.raw_mod_data.items():
+            rdf = (  # noqa
+                value.data.to_dataframe()
+                .reset_index()
+                .drop(columns=["x", "y", "z"], errors="ignore")
+                .assign(model=key)
+                .rename(columns={key: "value"})
+            )[["time", "value", "model"]]
+
+            duckdb.sql(
+                f"INSERT INTO {prefix}.raw_data SELECT * FROM rdf",
+                connection=con,
+            )
+
+        con.close()
+
     @staticmethod
-    def load(filename: Union[str, Path]) -> "Comparer":
-        """Load from netcdf file
+    def load(filename: Union[str, Path], name: Optional[str] = None) -> "Comparer":
+        """Load from duckdb file
 
         Parameters
         ----------
@@ -1289,30 +1360,105 @@ class Comparer(Scoreable):
         -------
         Comparer
         """
+
+        # get extension
+        ext = Path(filename).suffix
+
+        # match ext:
+        #    case ".db":
+        if ext == ".db":
+            return Comparer._load_from_duckdb(filename, name)
+        elif ext == ".nc":
+            #    case ".nc":
+            return Comparer._load_from_netcdf(filename)
+        else:
+            #    case _:
+            raise NotImplementedError(f"Unknown extension: {ext}")
+
+    @staticmethod
+    def _load_from_duckdb(filename, name: Optional[str]) -> "Comparer":
+        import duckdb
+
+        con = duckdb.connect(filename)
+        # table_names = con.sql("SHOW ALL TABLES").df()["name"].to_list()
+
+        if name is None:
+            name = con.sql("SHOW ALL TABLES").df()["schema"].to_list()[0]
+
+        df = (
+            duckdb.sql(f"SELECT * FROM {name}.matched_data", connection=con)
+            .df()
+            .set_index("time")
+        )
+
+        # convert pandas dataframe to xarray dataset
+        ds = xr.Dataset.from_dataframe(df)
+
+        attrs = duckdb.sql(f"SELECT * FROM {name}.attrs", connection=con).df()
+        for row in attrs.iterrows():
+            key = row[1]["key"]
+            value = row[1]["value"]
+            if key == "global":
+                ds.attrs = eval(value)
+            else:
+                ds[key].attrs = eval(value)
+
+        raw_mod_data = {}
+
+        # tables = con.sql("SHOW ALL TABLES").df()
+        # my_tables = tables[tables["schema"] == name]["name"].to_list()
+        # raw_tables = [t for t in my_tables if "raw_" in t]
+        # for table in raw_tables:
+        #     key = table[4:]
+        #     rdf = (
+        #         duckdb.sql(f"SELECT * FROM {name}.{table}", connection=con)
+        #         .df()
+        #         .set_index("time")
+        #     )
+        #     rds = xr.Dataset.from_dataframe(rdf)
+        #     rds.attrs = ds.attrs
+        #     raw_mod_data[key] = PointModelResult(data=rds)
+        raw_df = con.sql(f"SELECT * FROM {name}.raw_data").df()
+
+        models = raw_df["model"].unique()
+        for model in models:
+            # some pandas magic to get the right format
+            rdf = (
+                raw_df[raw_df["model"] == model]
+                .set_index("time")
+                .rename(columns={"value": model})[[model]]
+            )
+            rds = xr.Dataset.from_dataframe(rdf)
+            rds.attrs = ds.attrs
+            raw_mod_data[model] = PointModelResult(data=rds)
+
+        return Comparer(matched_data=ds, raw_mod_data=raw_mod_data)
+
+    @staticmethod
+    def _load_from_netcdf(filename) -> "Comparer":
         with xr.open_dataset(filename) as ds:
             data = ds.load()
 
-        if data.gtype == "track":
-            return Comparer(matched_data=data)
+            if data.gtype == "track":
+                return Comparer(matched_data=data)
 
-        if data.gtype == "point":
-            raw_mod_data: Dict[str, PointModelResult] = {}
+            if data.gtype == "point":
+                raw_mod_data: Dict[str, PointModelResult] = {}
 
-            for var in data.data_vars:
-                var_name = str(var)
-                if var_name[:5] == "_raw_":
-                    new_key = var_name[5:]  # remove prefix '_raw_'
-                    ds = data[[var_name]].rename(
-                        {"_time_raw_" + new_key: "time", var_name: new_key}
-                    )
-                    ts = PointModelResult(data=ds, name=new_key)
+                for var in data.data_vars:
+                    var_name = str(var)
+                    if var_name[:5] == "_raw_":
+                        new_key = var_name[5:]  # remove prefix '_raw_'
+                        ds = data[[var_name]].rename(
+                            {"_time_raw_" + new_key: "time", var_name: new_key}
+                        )
+                        ts = PointModelResult(data=ds, name=new_key)
 
-                    raw_mod_data[new_key] = ts
+                        raw_mod_data[new_key] = ts
 
-            # filter variables, only keep the ones with a 'time' dimension
-            data = data[[v for v in data.data_vars if "time" in data[v].dims]]
+                # filter variables, only keep the ones with a 'time' dimension
+                data = data[[v for v in data.data_vars if "time" in data[v].dims]]
 
-            return Comparer(matched_data=data, raw_mod_data=raw_mod_data)
-
-        else:
-            raise NotImplementedError(f"Unknown gtype: {data.gtype}")
+                return Comparer(matched_data=data, raw_mod_data=raw_mod_data)
+            else:
+                raise NotImplementedError(f"Unknown gtype: {data.gtype}")
