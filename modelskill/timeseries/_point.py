@@ -45,6 +45,7 @@ def _parse_point_items(
 
     # check that there are no duplicates
     res = PointItem(values=item, aux=aux_items_str)
+    # TODO move validation to PointItem
     if len(set(res.all)) != len(res.all):
         raise ValueError(f"Duplicate items! {res.all}")
 
@@ -66,13 +67,18 @@ def _parse_point_input(
         data, get_args(PointType)
     ), f"Could not construct object from provided data of type {type(data)}"
 
+    # TODO refactor and create separate methods for each input type
     if isinstance(data, (str, Path)):
         suffix = Path(data).suffix
-        name = name or Path(data).stem
         if suffix == ".dfs0":
+            name = name or Path(data).stem
+            # TODO avoid changing type of data
             data = mikeio.read(data)  # now mikeio.Dataset
         elif suffix == ".nc":
+            stem = Path(data).stem
+            # TODO avoid changing type of data
             data = xr.open_dataset(data)
+            name = name or data.attrs.get("name") or stem
     elif isinstance(data, mikeio.Dfs0):
         data = data.read()  # now mikeio.Dataset
 
